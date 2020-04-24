@@ -5,24 +5,26 @@ using System.Threading.Tasks;
 using AutoMapper;
 using FreeSql;
 using LinCms.Application.Contracts.Blog.Tags;
+using LinCms.Application.Contracts.Blog.Tags.Dtos;
 using LinCms.Application.Contracts.Blog.UserSubscribes;
+using LinCms.Application.Contracts.Blog.UserSubscribes.Dtos;
 using LinCms.Core.Data;
 using LinCms.Core.Entities.Blog;
 using LinCms.Core.Exceptions;
 using LinCms.Core.Extensions;
+using LinCms.Core.IRepositories;
 using LinCms.Core.Security;
-using LinCms.Infrastructure.Repositories;
 
 namespace LinCms.Application.Blog.Tags
 {
     public class TagService : ITagService
     {
-        private readonly AuditBaseRepository<Tag> _tagRepository;
+        private readonly IAuditBaseRepository<UserTag> _userTagRepository;
+        private readonly IAuditBaseRepository<Tag> _tagRepository;
         private readonly IMapper _mapper;
         private readonly ICurrentUser _currentUser;
-        private readonly AuditBaseRepository<UserTag> _userTagRepository;
         private readonly BaseRepository<TagArticle> _tagArticleRepository;
-        public TagService(AuditBaseRepository<Tag> tagRepository, IMapper mapper, ICurrentUser currentUser, AuditBaseRepository<UserTag> userTagRepository, BaseRepository<TagArticle> tagArticleRepository)
+        public TagService(IAuditBaseRepository<Tag> tagRepository, IMapper mapper, ICurrentUser currentUser, IAuditBaseRepository<UserTag> userTagRepository, BaseRepository<TagArticle> tagArticleRepository)
         {
             _tagRepository = tagRepository;
             _mapper = mapper;
@@ -69,7 +71,7 @@ namespace LinCms.Application.Blog.Tags
                 throw new LinCmsException("不存在此标签");
             }
             TagListDto tagDto = _mapper.Map<TagListDto>(tag);
-            tagDto.IsSubscribe = this.IsSubscribe(id);
+            tagDto.IsSubscribe = await this.IsSubscribeAsync(id);
             tagDto.ThumbnailDisplay = _currentUser.GetFileUrl(tagDto.Thumbnail);
             return tagDto;
         }
@@ -86,8 +88,7 @@ namespace LinCms.Application.Blog.Tags
                 searchDto.Sort = "create_time desc";
             }
 
-            List<TagListDto> tags = (await
-                    _tagRepository.Select.IncludeMany(r => r.UserTags, r => r.Where(u => u.CreateUserId == _currentUser.Id))
+            List<TagListDto> tags = (await _tagRepository.Select.IncludeMany(r => r.UserTags, r => r.Where(u => u.CreateUserId == _currentUser.Id))
                         .WhereIf(searchDto.TagIds.IsNotNullOrEmpty(), r => searchDto.TagIds.Contains(r.Id))
                         .WhereIf(searchDto.TagName.IsNotNullOrEmpty(), r => r.TagName.Contains(searchDto.TagName))
                         .WhereIf(searchDto.Status != null, r => r.Status == searchDto.Status)
@@ -104,10 +105,10 @@ namespace LinCms.Application.Blog.Tags
             return new PagedResultDto<TagListDto>(tags, totalCount);
         }
 
-        public bool IsSubscribe(Guid tagId)
+        public async Task<bool> IsSubscribeAsync(Guid tagId)
         {
             if (_currentUser.Id == null) return false;
-            return _userTagRepository.Select.Any(r => r.TagId == tagId && r.CreateUserId == _currentUser.Id);
+            return await _userTagRepository.Select.AnyAsync(r => r.TagId == tagId && r.CreateUserId == _currentUser.Id);
         }
 
         public PagedResultDto<TagListDto> GetSubscribeTags(UserSubscribeSearchDto userSubscribeDto)

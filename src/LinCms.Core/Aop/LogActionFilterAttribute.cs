@@ -2,7 +2,7 @@
 using LinCms.Core.Common;
 using LinCms.Core.Data;
 using LinCms.Core.Entities;
-using LinCms.Core.Repositories;
+using LinCms.Core.IRepositories;
 using LinCms.Core.Security;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Controllers;
@@ -97,7 +97,7 @@ namespace LinCms.Core.Aop
 
             linLog.Message += $"{_currentUser.UserName}访问{context.HttpContext.Request.Path},耗时：{Stopwatch.Elapsed.TotalMilliseconds} 毫秒";
 
-           _logRepository.Create(linLog);
+           //_logRepository.Create(linLog);
 
             //记录文本日志
             _logger.LogInformation(JsonConvert.SerializeObject(linLog));

@@ -3,20 +3,22 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
+using AspNetCoreRateLimit;
+using Autofac;
 using AutoMapper;
 using DotNetCore.CAP.Messages;
 using HealthChecks.UI.Client;
 using LinCms.Application.AutoMapper.Cms;
-using LinCms.Application.Cms.Files;
 using LinCms.Core.Aop;
 using LinCms.Core.Common;
 using LinCms.Core.Data;
 using LinCms.Core.Data.Enums;
-using LinCms.Core.Entities;
 using LinCms.Core.Extensions;
+using LinCms.Core.Middleware;
 using LinCms.Plugins.Poem.AutoMapper;
-using LinCms.Web.Data;
-using LinCms.Web.Middleware;
+using LinCms.Web.Configs;
+using LinCms.Web.SnakeCaseQuery;
+using LinCms.Web.Uow;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -48,10 +50,10 @@ namespace LinCms.Web
             Configuration = configuration;
         }
 
-        // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
-            services.AddContext();
+            services.AddContext(Configuration);
+
             #region IdentityServer4
 
             #region AddAuthentication\AddIdentityServerAuthentication 
@@ -90,7 +92,7 @@ namespace LinCms.Web
                 .AddJwtBearer(JwtBearerDefaults.AuthenticationScheme, options =>
                 {
                     //identityserver4 地址 也就是本项目地址
-                    options.Authority = $"{Configuration["Identity:Protocol"]}://{Configuration["Identity:IP"]}:{Configuration["Identity:Port"]}";
+                    options.Authority = Configuration["Service:Authority"];
                     options.RequireHttpsMetadata = false;
                     options.Audience = Configuration["Service:Name"];
 
@@ -98,8 +100,7 @@ namespace LinCms.Web
                     {
                         // The signing key must match!
                         ValidateIssuerSigningKey = true,
-                        IssuerSigningKey = new SymmetricSecurityKey(
-                            Encoding.ASCII.GetBytes(Configuration["Authentication:JwtBearer:SecurityKey"])),
+                        IssuerSigningKey = new SymmetricSecurityKey(Encoding.ASCII.GetBytes(Configuration["Authentication:JwtBearer:SecurityKey"])),
 
                         // Validate the JWT Issuer (iss) claim
                         ValidateIssuer = true,
@@ -158,7 +159,7 @@ namespace LinCms.Web
 
                             else
                             {
-                                message = "请先登录";//""认证失败，请检查请求头或者重新登录";
+                                message = "请先登录" + context.ErrorDescription;//""认证失败，请检查请求头或者重新登录";
                                 errorCode = ErrorCode.AuthenticationFailed;
                             }
 
@@ -179,6 +180,11 @@ namespace LinCms.Web
                     options.ClaimActions.MapJsonKey(LinConsts.Claims.AvatarUrl, "avatar_url");
                     options.ClaimActions.MapJsonKey(LinConsts.Claims.BIO, "bio");
                     options.ClaimActions.MapJsonKey(LinConsts.Claims.BlogAddress, "blog");
+                })
+                .AddQQ(options =>
+                {
+                    options.ClientId = Configuration["Authentication:QQ:ClientId"];
+                    options.ClientSecret = Configuration["Authentication:QQ:ClientSecret"];
                 });
             #endregion
 
@@ -193,14 +199,15 @@ namespace LinCms.Web
             #region Mvc
             services.AddControllers(options =>
              {
-                 options.ValueProviderFactories.Add(new SnakeCaseQueryValueProviderFactory());//设置SnakeCase形式的QueryString参数
-                 //options.Filters.Add<LinCmsExceptionFilter>();
+                 options.ValueProviderFactories.Add(new ValueProviderFactory());//设置SnakeCase形式的QueryString参数
                  options.Filters.Add<LogActionFilterAttribute>(); // 添加请求方法时的日志记录过滤器
+                 //options.Filters.Add<UowActionFilter>(); // 添加请求方法时的日志记录过滤器
+
              })
              .AddNewtonsoftJson(opt =>
              {
                  //opt.SerializerSettings.DateFormatString = "yyyy-MM-dd HH:MM:ss";
-                 //设置时间戳格式
+                 //设置自定义时间戳格式
                  opt.SerializerSettings.Converters = new List<JsonConverter>()
                  {
                         new LinCmsTimeConverter()
@@ -232,13 +239,12 @@ namespace LinCms.Web
              });
             #endregion
 
-            services.AddServices();
-
+            services.AddDIServices();
 
             #region Swagger
             //Swagger重写PascalCase，改成SnakeCase模式
             services.TryAddEnumerable(ServiceDescriptor
-                .Transient<IApiDescriptionProvider, SnakeCaseQueryParametersApiDescriptionProvider>());
+                .Transient<IApiDescriptionProvider, ApiDescriptionProvider>());
 
             //Register the Swagger generator, defining 1 or more Swagger documents
             services.AddSwaggerGen(options =>
@@ -277,6 +283,8 @@ namespace LinCms.Web
                 options.MultipartHeadersCountLimit = 10;
             });
 
+
+
             IConfigurationSection configurationSection = Configuration.GetSection("ConnectionStrings:MySql");
             services.AddCap(x =>
             {
@@ -292,17 +300,24 @@ namespace LinCms.Web
 
                 x.UseDashboard();
                 x.FailedRetryCount = 5;
-                x.FailedThresholdCallback = (type, message) =>
+                x.FailedThresholdCallback = (type) =>
                 {
                     Console.WriteLine(
-                        $@"A message of type {type} failed after executing {x.FailedRetryCount} several times, requiring manual troubleshooting. Message name: {message.GetName()}");
+                        $@"A message of type {type} failed after executing {x.FailedRetryCount} several times, requiring manual troubleshooting. Message name: {type.Message.GetName()}");
                 };
             });
-            services.AddStartupTask<MigrationStartupTask>();
+
+            //之前请注入AddCsRedisCore，内部实现IDistributedCache接口
+            services.AddIpRateLimiting(Configuration);
+
             services.AddHealthChecks();
         }
 
-        // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
+        public void ConfigureContainer(ContainerBuilder builder)
+        {
+            builder.RegisterModule(new AutofacModule());
+        }
+
         public void Configure(IApplicationBuilder app, IWebHostEnvironment env, ILoggerFactory loggerFactory)
         {
             if (env.IsDevelopment())
@@ -315,15 +330,11 @@ namespace LinCms.Web
             }
             app.UseHsts();
             app.UseStaticFiles();
-            //异常中间件应放在MVC执行事务的中件间的前面，否则异常时RequestMvcMiddleWare无法catch异常
+            //异常中间件应放在MVC执行事务的中件间的前面，否则异常时UnitOfWorkMiddleware无法catch异常
             app.UseMiddleware(typeof(CustomExceptionMiddleWare));
-            app.UseMiddleware(typeof(RequestMvcMiddleWare));
+            app.UseMiddleware(typeof(UnitOfWorkMiddleware));
 
-            // Enable middleware to serve generated Swagger as a JSON endpoint.
             app.UseSwagger();
-
-            //// Enable middleware to serve swagger-ui (HTML, JS, CSS, etc.),
-            //// specifying the Swagger JSON endpoint.
             app.UseSwaggerUI(c =>
             {
                 c.SwaggerEndpoint("/swagger/v1/swagger.json", "LinCms");
@@ -341,6 +352,8 @@ namespace LinCms.Web
 
             app.UseAuthentication();
             app.UseHttpsRedirection();
+     
+            app.UseIpRateLimiting();
 
             app.UseRouting()
                .UseAuthorization()

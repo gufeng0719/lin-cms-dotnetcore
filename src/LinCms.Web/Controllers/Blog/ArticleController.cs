@@ -6,16 +6,19 @@ using AutoMapper;
 using DotNetCore.CAP;
 using LinCms.Application.Blog.Articles;
 using LinCms.Application.Contracts.Blog.Articles;
+using LinCms.Application.Contracts.Blog.Articles.Dtos;
 using LinCms.Application.Contracts.Blog.Notifications;
+using LinCms.Application.Contracts.Blog.Notifications.Dtos;
 using LinCms.Core.Aop;
 using LinCms.Core.Data;
 using LinCms.Core.Entities.Blog;
 using LinCms.Core.Exceptions;
 using LinCms.Core.Extensions;
 using LinCms.Core.Security;
-using LinCms.Infrastructure.Repositories;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using LinCms.Core.IRepositories;
+using LinCms.Application.Contracts.Blog.Classifys;
 
 namespace LinCms.Web.Controllers.Blog
 {
@@ -24,37 +27,42 @@ namespace LinCms.Web.Controllers.Blog
     [Authorize]
     public class ArticleController : ControllerBase
     {
-        private readonly AuditBaseRepository<Article> _articleRepository;
+        private readonly IAuditBaseRepository<Article> _articleRepository;
         private readonly IArticleService _articleService;
         private readonly IMapper _mapper;
         private readonly ICurrentUser _currentUser;
         private readonly ICapPublisher _capBus;
-        public ArticleController(AuditBaseRepository<Article> articleRepository,
+        private readonly IClassifyService _classifyService;
+
+        public ArticleController(IAuditBaseRepository<Article> articleRepository,
             IMapper mapper,
             ICurrentUser currentUser,
             IArticleService articleService,
-            ICapPublisher capBus)
+            ICapPublisher capBus, IClassifyService classifyService)
         {
             _articleRepository = articleRepository;
             _mapper = mapper;
             _currentUser = currentUser;
             _articleService = articleService;
             _capBus = capBus;
+            _classifyService = classifyService;
         }
+
         /// <summary>
         /// 删除自己的随笔
         /// </summary>
         /// <param name="id"></param>
         /// <returns></returns>
         [HttpDelete("{id}")]
-        public UnifyResponseDto DeleteMyArticle(Guid id)
+        public async Task<UnifyResponseDto>  DeleteMyArticle(Guid id)
         {
             bool isCreateArticle = _articleRepository.Select.Any(r => r.Id == id && r.CreateUserId == _currentUser.Id);
             if (!isCreateArticle)
             {
                 throw new LinCmsException("无法删除别人的随笔!");
             }
-            _articleService.Delete(id);
+
+            await _articleService.DeleteAsync(id);
             return UnifyResponseDto.Success();
         }
 
@@ -65,9 +73,9 @@ namespace LinCms.Web.Controllers.Blog
         /// <returns></returns>
         [HttpDelete("cms/{id}")]
         [LinCmsAuthorize("删除随笔", "随笔")]
-        public UnifyResponseDto Delete(Guid id)
+        public async Task<UnifyResponseDto> Delete(Guid id)
         {
-            _articleService.Delete(id);
+            await _articleService.DeleteAsync(id);
             return UnifyResponseDto.Success();
         }
 
@@ -78,7 +86,7 @@ namespace LinCms.Web.Controllers.Blog
         /// <returns></returns>
         [HttpGet]
         [AllowAnonymous]
-        public PagedResultDto<ArticleListDto> Get([FromQuery]ArticleSearchDto searchDto)
+        public PagedResultDto<ArticleListDto> Get([FromQuery] ArticleSearchDto searchDto)
         {
             List<ArticleListDto> articles = _articleRepository
                 .Select
@@ -102,7 +110,7 @@ namespace LinCms.Web.Controllers.Blog
         /// <returns></returns>
         [HttpGet("query")]
         [AllowAnonymous]
-        public async Task<PagedResultDto<ArticleListDto>> GetArticleAsync([FromQuery]ArticleSearchDto searchDto)
+        public async Task<PagedResultDto<ArticleListDto>> GetArticleAsync([FromQuery] ArticleSearchDto searchDto)
         {
             return await _articleService.GetArticleAsync(searchDto);
             //string redisKey = "article:query:" + searchDto.ToString();
@@ -118,7 +126,7 @@ namespace LinCms.Web.Controllers.Blog
         /// <returns></returns>
         [HttpGet("all")]
         [LinCmsAuthorize("所有随笔", "随笔")]
-        public PagedResultDto<ArticleListDto> GetAllArticles([FromQuery]ArticleSearchDto searchDto)
+        public PagedResultDto<ArticleListDto> GetAllArticles([FromQuery] ArticleSearchDto searchDto)
         {
             var articles = _articleRepository
                 .Select
@@ -146,37 +154,32 @@ namespace LinCms.Web.Controllers.Blog
         }
 
         [HttpPost]
-        public async Task<UnifyResponseDto> CreateAsync([FromBody] CreateUpdateArticleDto createArticle)
+        public async Task<Guid> CreateAsync([FromBody] CreateUpdateArticleDto createArticle)
         {
-            await _articleService.CreateAsync(createArticle);
+            Guid id = await _articleService.CreateAsync(createArticle);
 
             _capBus.Publish("NotificationController.Post", new CreateNotificationDto()
             {
-
             });
 
-            return UnifyResponseDto.Success("新建随笔成功");
+            return id;
         }
 
 
         [HttpPut("{id}")]
-        public async Task<UnifyResponseDto> UpdateAsync(Guid id, [FromBody] CreateUpdateArticleDto updateArticle)
+        public async Task<UnifyResponseDto> UpdateAsync(Guid id, [FromBody] CreateUpdateArticleDto updateArticleDto)
         {
-            Article article = _articleRepository.Select.Where(r => r.Id == id).ToOne();
-            if (article.CreateUserId != _currentUser.Id)
+            Article article = await _articleService.UpdateAsync(id, updateArticleDto);
+            await _articleService.UpdateTagAsync(id, updateArticleDto);
+            if (article.ClassifyId != updateArticleDto.ClassifyId)
             {
-                throw new LinCmsException("您无权修改他人的随笔");
+                await _classifyService.UpdateArticleCountAsync(article.ClassifyId, -1);
+                await _classifyService.UpdateArticleCountAsync(updateArticleDto.ClassifyId, 1);
             }
-            if (article == null)
-            {
-                throw new LinCmsException("没有找到相关随笔");
-            }
-
-            _mapper.Map(updateArticle, article);
-            await _articleService.UpdateAsync(updateArticle, article);
 
             return UnifyResponseDto.Success("更新随笔成功");
         }
+
 
         /// <summary>
         /// 审核随笔-拉黑/取消拉黑
@@ -205,9 +208,9 @@ namespace LinCms.Web.Controllers.Blog
         /// <param name="pageDto"></param>
         /// <returns></returns>
         [HttpGet("subscribe")]
-        public PagedResultDto<ArticleListDto> GetSubscribeArticle([FromQuery]PageDto pageDto)
+        public async Task<PagedResultDto<ArticleListDto>> GetSubscribeArticleAsync([FromQuery] PageDto pageDto)
         {
-            return _articleService.GetSubscribeArticle(pageDto);
+            return await _articleService.GetSubscribeArticleAsync(pageDto);
         }
     }
 }

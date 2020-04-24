@@ -5,22 +5,27 @@ using AutoMapper;
 using LinCms.Application.Cms.Groups;
 using LinCms.Application.Cms.Permissions;
 using LinCms.Application.Contracts.Cms.Admins;
+using LinCms.Application.Contracts.Cms.Admins.Dtos;
 using LinCms.Application.Contracts.Cms.Groups;
+using LinCms.Application.Contracts.Cms.Groups.Dtos;
+using LinCms.Application.Contracts.Cms.Permissions;
 using LinCms.Application.Contracts.Cms.Users;
+using LinCms.Application.Contracts.Cms.Users.Dtos;
+using LinCms.Core.Aop;
 using LinCms.Core.Common;
 using LinCms.Core.Data;
 using LinCms.Core.Data.Enums;
 using LinCms.Core.Entities;
 using LinCms.Core.Exceptions;
 using LinCms.Core.Extensions;
+using LinCms.Core.IRepositories;
 using LinCms.Core.Security;
-using LinCms.Infrastructure.Repositories;
 
 namespace LinCms.Application.Cms.Users
 {
     public class UserService : IUserService
     {
-        private readonly UserRepository _userRepository;
+        private readonly IUserRepository _userRepository;
         private readonly IFreeSql _freeSql;
         private readonly IMapper _mapper;
         private readonly ICurrentUser _currentUser;
@@ -28,7 +33,7 @@ namespace LinCms.Application.Cms.Users
         private readonly IPermissionService _permissionService;
         private readonly IGroupService _groupService;
 
-        public UserService(UserRepository userRepository,
+        public UserService(IUserRepository userRepository,
             IFreeSql freeSql,
             IMapper mapper,
             ICurrentUser currentUser,
@@ -57,9 +62,10 @@ namespace LinCms.Application.Cms.Users
         }
 
 
+        [UnitOfWork]
         public async Task DeleteAsync(long userId)
         {
-            await _userRepository.DeleteAsync(r => r.Id == userId);
+            await _userRepository.DeleteAsync(new LinUser() { Id = userId });
             await _userIdentityService.DeleteAsync(userId);
             await _groupService.DeleteUserGroupAsync(userId);
         }
@@ -81,7 +87,7 @@ namespace LinCms.Application.Cms.Users
             List<UserDto> linUsers = _userRepository.Select
                 .IncludeMany(r => r.LinGroups)
                 .Where(r => r.Admin == (long)UserAdmin.Common)
-                .WhereIf(searchDto.GroupId != null, r => r.LinGroups.Any(u => u.Id == searchDto.GroupId))
+                .WhereIf(searchDto.GroupId != null, r => r.LinUserGroups.AsSelect().Any(u => u.GroupId == searchDto.GroupId))
                 .OrderByDescending(r => r.Id)
                 .ToPagerList(searchDto, out long totalCount)
                 .Select(r =>
@@ -94,7 +100,7 @@ namespace LinCms.Application.Cms.Users
             return new PagedResultDto<UserDto>(linUsers, totalCount);
         }
 
-        public async Task Register(LinUser user, List<long> groupIds,string password)
+        public async Task Register(LinUser user, List<long> groupIds, string password)
         {
             if (!string.IsNullOrEmpty(user.Username))
             {
@@ -193,12 +199,12 @@ namespace LinCms.Application.Cms.Users
             }).ExecuteAffrowsAsync();
         }
 
-        public LinUser GetCurrentUser()
+        public async Task<LinUser> GetCurrentUserAsync()
         {
             if (_currentUser.Id != null)
             {
                 long userId = (long)_currentUser.Id;
-                return _userRepository.Select.Where(r => r.Id == userId).ToOne();
+                return await _userRepository.Select.Where(r => r.Id == userId).ToOneAsync();
             }
             return null;
         }

@@ -5,7 +5,7 @@ using LinCms.Core.Aop;
 using LinCms.Core.Data;
 using LinCms.Core.Entities;
 using LinCms.Core.Exceptions;
-using LinCms.Infrastructure.Repositories;
+using LinCms.Core.IRepositories;
 using LinCms.Plugins.Poem.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -17,9 +17,9 @@ namespace LinCms.Plugins.Poem.Controllers
     [Authorize]
     public class PoemController : ControllerBase
     {
-        private readonly AuditBaseRepository<LinPoem> _poemRepository;
+        private readonly IAuditBaseRepository<LinPoem> _poemRepository;
         private readonly IMapper _mapper;
-        public PoemController(AuditBaseRepository<LinPoem> poemRepository, IMapper mapper)
+        public PoemController(IAuditBaseRepository<LinPoem> poemRepository, IMapper mapper)
         {
             _poemRepository = poemRepository;
             _mapper = mapper;
@@ -65,11 +65,8 @@ namespace LinCms.Plugins.Poem.Controllers
                 throw new LinCmsException("没有找到诗词");
             }
 
-            //使用AutoMapper方法简化类与类之间的转换过程
             _mapper.Map(updatePoem, poem);
-
             _poemRepository.Update(poem);
-
             return UnifyResponseDto.Success("更新诗词成功");
         }
     }

@@ -2,6 +2,7 @@
 using System.IO;
 using System.Security.Cryptography;
 using LinCms.Application.Contracts.Cms.Files;
+using LinCms.Application.Contracts.Cms.Files.Dtos;
 using LinCms.Core.Common;
 using LinCms.Core.Entities;
 using LinCms.Core.Exceptions;
@@ -99,9 +100,7 @@ namespace LinCms.Application.Cms.Files
             string path = _configuration["Qiniu:PrefixPath"] + "/" + DateTime.Now.ToString("yyyyMMddHHmmssffffff") + Path.GetExtension(file.FileName);
             Stream stream = file.OpenReadStream();
             HttpResult result = upload.UploadStream(stream, path, GetAccessToken(), null);
-
-            if (result.Code != (int)HttpCode.OK) throw new LinCmsException("上传失败");
-
+            if (result.Code != (int) HttpCode.OK) throw new LinCmsException("上传失败");
             return path;
 
         }
